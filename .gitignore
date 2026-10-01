@@ -1,0 +1,47 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.quarto/
+analysis/*_files/
+analysis/*.html
+analysis/*.pdf
+analysis/*.docx
+*.log
+~$*
+.DS_Store
+Thumbs.db
+*.xlsx
+*.xls
+*.csv
+*.rds
+*.rda
+!data/American_Samoa_GIS_Demographics.xlsx
+!data/CVX Codes.xlsx
+!data/clinic_county_overrides.example.csv
+
+# Raw patient reports: never tracked. Keep only the empty folder marker.
+data/Raw Patient Data/*
+!data/Raw Patient Data/.gitkeep
+
+# All patient-level exports, crosswalks, operational lists, and generated tables.
+# This also protects date-suffixed and renamed output files.
+data/Analytic Code Output/*
+!data/Analytic Code Output/.gitkeep
+
+# Generated CSVs are reproducible. Review them before any authorized deployment.
+data/*.csv
+!data/clinic_county_overrides.example.csv
+data/*.rds
+data/*.RData
+data/*.zip
+data/PRIVATE*
+data/*Patient*
+data/*Roster*
+data/*Details*
+data/*RR*
+Archive/
+**/Archive/
+rsconnect/
+manifest.json
+

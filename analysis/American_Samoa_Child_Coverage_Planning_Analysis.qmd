@@ -1,0 +1,114 @@
+---
+title: "American Samoa Child Coverage and Vaccination Planning"
+author: "USAPI Assessment Team | Surveillance & Epidemiology Branch | ISD | NCIRD | CDC"
+date: today
+date-format: long
+params:
+  age_as_of_date: null
+format:
+  html:
+    theme: flatly
+    toc: true
+    toc-depth: 2
+    code-fold: true
+    css: ../www/styles.css
+execute:
+  warning: false
+  message: false
+  echo: false
+---
+
+This analysis links the American Samoa WebIZ roster, Patient Details with
+Services, and Reminder/Recall reports. It assigns census geography, evaluates
+children aged 2-83 months, exports the eight planning tables, and refreshes the
+Shiny dashboard. Set the reporting date and input/product choices in `config.R`.
+For a direct run with live Console progress, open `RUN_ANALYSIS.R` and click
+**Source** instead of rendering this report. The Quarto progress bar stays on
+run-analysis while the pipeline works; stage and child-count messages show
+progress in the Render pane.
+
+```{r}
+#| label: run-analysis
+#| include: false
+here::i_am("analysis/American_Samoa_Child_Coverage_Planning_Analysis.qmd")
+source(here::here("R", "run_analysis.R"), local = TRUE)
+result <- run_as_analysis(analysis_date = params$age_as_of_date)
+```
+
+## Input reports
+
+```{r}
+knitr::kable(data.frame(Report = names(result$input_files),
+  File = basename(result$input_files), row.names = NULL))
+```
+
+The newest matching reports are selected when no paths are specified. Filenames
+may start with `Roster`, `Details`/`Detail`, or `RR`; full report names containing
+Patient Roster, Patient Details with Services, Reminder, or Recall also work.
+
+## Geography
+
+Reminder/Recall **City** supplies residence. Its IIS label is matched to the
+workbook's official census designation. Raw County in either patient report is
+ignored. If the city is unrecognized or its county is ambiguous, the roster
+clinic may identify a county. A clinic county does not establish a child's
+village. Unresolved and combined geographies remain labeled and appear in QA.
+
+Population, under-age-5 population, area, and density come from the supplied
+2020 Census workbook. Locality aliases share their official parent village's
+statistics; these values are not summed across patient records or aliases.
+
+## Vaccine status and planning
+
+The assessment uses the first routine age anchor. DTaP dose 4 begins at 15
+months; MMR and varicella dose 2 begin at 48 months. Hib/PCV requirements depend
+on the ages and types of previous valid doses. Healthy children aged 60 months
+or older have no routine Hib/PCV catch-up need and are excluded from those
+eligible denominators. HepA dose 2 uses a six-calendar-month interval.
+
+Rotarix uses two doses; RotaTeq or mixed/unknown histories use three. Age limits
+prevent new rotavirus doses after eight months. Core UTD retains the CNMI
+eight-antigen measure, with rotavirus shown separately. This core measure does
+not include seasonal or medical-risk schedules.
+
+**Not UTD** and **eligible for a dose today** are separate measures. Product
+estimates cover one eligible visit, not all future doses needed to complete
+each series. Combinations are selected only when all included antigens are
+eligible. Change product preferences to match local inventory after reviewing
+the audit below.
+
+Sources: [AAP 2026 schedule, updated September 2, 2026](https://downloads.aap.org/AAP/PDF/AAP-Immunization-Schedule.pdf),
+[CDC PedvaxHIB catch-up](https://www.cdc.gov/vaccines/hcp/imz-schedules/downloads/job-aids/hib-pedvax.pdf),
+[CDC other/mixed Hib catch-up](https://www.cdc.gov/vaccines/hcp/imz-schedules/downloads/job-aids/hib-acthib.pdf),
+and [CDC PCV catch-up](https://www.cdc.gov/vaccines/hcp/imz-schedules/downloads/job-aids/pneumococcal.pdf).
+
+## Run QA
+
+```{r}
+knitr::kable(result$run_qa)
+```
+
+## Combination vaccine use
+
+This is measured from the selected Patient Details with Services report after
+excluding non-administrations, missing dates, future administrations, and
+duplicate patient/date/CVX records. CVX 130 does not distinguish Kinrix from
+Quadracel. Frequencies describe recorded use and do not establish current stock.
+
+```{r}
+knitr::kable(result$product_audit[result$product_audit$combination, ], digits = 1)
+```
+
+## Output files
+
+```{r}
+knitr::kable(data.frame(Output = names(result$paths), File = basename(result$paths), row.names = NULL))
+```
+
+The formatted workbook includes IIS Denominator, Reminder by Village, Needs by
+Vaccine, Products Needed, Dose Coverage, UTD by Village, Coverage 19-35 Months,
+and Series 19-35 Months, plus QA/audit tabs. Dose Coverage uses vaccine section
+headings and the seven requested columns. UTD by Village summarizes the full
+2-83-month population without an extra Age Group column.
+
+Open `app.R` and run the Shiny app after this analysis completes.
