@@ -20,6 +20,13 @@ are not included. There are no precomputed American Samoa coverage estimates.
 5. Open **RUN_ANALYSIS.R** and click **Source** in RStudio. The Console shows
    each stage and a child counter every 100 children. This produces the Excel
    tables and dashboard CSVs directly. Wait for **COMPLETE**.
+   
+Clicking Source in R/run_analysis.R only loads the function—it doesn’t start the analysis.
+To start it now, enter this in the RStudio Console:
+result <- run_as_analysis()
+
+For future runs, open RUN_ANALYSIS.R in the main project folder, outside the R folder, and click Source. You should see “Starting American Samoa analysis” followed by progress messages.
+
 6. Open **app.R** and click **Run App** to view the dashboard.
 
 If you also want an HTML analysis report, render

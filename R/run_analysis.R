@@ -1,6 +1,16 @@
 # Run from the root: source("R/run_analysis.R"); result <- run_as_analysis()
 # Quarto calls the same function, so there is a single analytic pipeline.
 
+AS_PATIENT_EXPORT_REVISION <- "20261002_35_COLUMNS"
+AS_PATIENT_EXPORT_COLUMNS <- c(
+  "patient_id","first_name","last_name","dob","age_months","age_group_label",
+  "island_atoll","district","county","village","region","immunization_recommendations",
+  "mmr_utd","var_utd","hepa_utd",
+  "need_dtap","need_ipv","need_mmr","need_hib","need_hepb","need_pcv","need_rota","need_var","need_hepa",
+  "PedVaxHib","Vaxelis","Pediarix","DTaP_Single","IPV_Single","HepB_Single",
+  "MMR_Single","Prevnar","RotaTeq","Varivax","Havrix"
+)
+
 run_as_analysis <- function(project_dir=NULL,analysis_date=NULL,verbose=TRUE) {
   packages<-c("dplyr","tidyr","purrr","stringr","lubridate","readxl","readr","openxlsx","here","tibble")
   missing<-packages[!vapply(packages,requireNamespace,logical(1),quietly=TRUE)]
@@ -35,6 +45,7 @@ run_as_analysis <- function(project_dir=NULL,analysis_date=NULL,verbose=TRUE) {
   completed<-FALSE
   on.exit(if(!completed)progress("Run stopped before completion. See the Console/Render pane for the error or interruption."),add=TRUE)
   progress(paste("Starting American Samoa analysis; assessment date",analysis_date))
+  progress(paste("Patient export revision:",AS_PATIENT_EXPORT_REVISION))
   pick<-function(override,pattern) {
     if(is.null(override))newest_matching_file(raw_dir,pattern) else {
       path<-if(grepl("^(/|[A-Za-z]:)",override))override else file.path(project_dir,override)
@@ -106,11 +117,20 @@ run_as_analysis <- function(project_dir=NULL,analysis_date=NULL,verbose=TRUE) {
   analytic_deid<-analytic_full |> dplyr::left_join(crosswalk,by="patient_id") |>
     dplyr::select(patient_id=dashboard_patient_id,dplyr::any_of(unique(safe_columns)))
   need_columns<-unname(AS_VACCINE_NEED_MAP)
+  # Fixed private export schema, in the requested column order.
+  # Optional separate name fields remain blank when absent from the roster.
+  # Requested product headings use the existing single-antigen product flags.
   operational<-analytic_full |> dplyr::filter(dplyr::if_any(dplyr::all_of(need_columns),~.x==1)) |>
-    dplyr::select(dplyr::any_of(c("patient_id","patient_name","first_name","last_name","dob","age_months",
-      "age_group_label",geo_columns,"primary_contact_lastname_firstname","primary_contact_name","telephone",
-      "phone","cell_phone","address_line_1","address_line_2")),dplyr::all_of(need_columns),
-      dplyr::all_of(unname(AS_PRODUCT_MAP)),dplyr::ends_with("_next_due_date"))
+    add_missing_columns(c("first_name","last_name"),value=NA_character_) |>
+    dplyr::select(
+      patient_id,first_name,last_name,dob,age_months,age_group_label,
+      island_atoll,district,county,village,region,immunization_recommendations,
+      mmr_utd,var_utd,hepa_utd,
+      need_dtap,need_ipv,need_mmr,need_hib,need_hepb,need_pcv,need_rota,need_var,need_hepa,
+      PedVaxHib=Hib_Single,Vaxelis,Pediarix,DTaP_Single,IPV_Single,HepB_Single,
+      MMR_Single,Prevnar=PCV_Product,RotaTeq,Varivax,Havrix=HepA_Product)
+  if(!identical(names(operational),AS_PATIENT_EXPORT_COLUMNS))
+    stop("Patients needing vaccination must contain exactly the 35 requested columns, in order.",call.=FALSE)
   missing_coordinates<-analytic_deid |> dplyr::filter(is.na(latitude)|is.na(longitude)|village=="Unknown"|!county_resolved) |>
     dplyr::count(island_atoll,district,county,village,geography_qa,name="Children (n)")
   run_qa<-tibble::tibble(
@@ -131,7 +151,21 @@ run_as_analysis <- function(project_dir=NULL,analysis_date=NULL,verbose=TRUE) {
   for(name in c("full","deid","operational","coordinates","id_crosswalk")) {
     progress(paste("Writing",basename(paths[[name]]),"..."))
     data<-switch(name,full=analytic_full,deid=analytic_deid,operational=operational,coordinates=missing_coordinates,id_crosswalk=crosswalk)
-    openxlsx::write.xlsx(data,paths[[name]],asTable=nrow(data)>0,overwrite=TRUE)
+    tryCatch(
+      withCallingHandlers(
+        openxlsx::write.xlsx(data,paths[[name]],asTable=nrow(data)>0,overwrite=TRUE),
+        warning=function(w)stop(conditionMessage(w),call.=FALSE)
+      ),
+      error=function(e)stop("Could not save ",paths[[name]],
+        ". Close this workbook in Excel and rerun. ",conditionMessage(e),call.=FALSE)
+    )
+    if(name=="operational") {
+      saved_columns<-names(readxl::read_excel(paths[[name]],n_max=0,.name_repair="minimal"))
+      if(!identical(saved_columns,AS_PATIENT_EXPORT_COLUMNS))
+        stop("Saved vaccination workbook failed the 35-column check: ",paths[[name]],call.=FALSE)
+      progress(paste("Verified vaccination workbook: exactly 35 columns in the requested order.",
+        normalizePath(paths[[name]],winslash="/",mustWork=TRUE)))
+    }
   }
   progress("Building and formatting the eight summary tables...")
   tables<-build_as_tables(analytic_deid)
