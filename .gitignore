@@ -3,6 +3,7 @@
 .RData
 .Ruserdata
 .quarto/
+
 analysis/*_files/
 analysis/*.html
 analysis/*.pdf
@@ -25,9 +26,11 @@ data/Raw Patient Data/*
 !data/Raw Patient Data/.gitkeep
 
 # All patient-level exports, crosswalks, operational lists, and generated tables.
-# This also protects date-suffixed and renamed output files.
-data/Analytic Code Output/*
-!data/Analytic Code Output/.gitkeep
+
+# Ignore all analytic outputs except deidentified Dataset 2
+!/data/Analytic Code Output/
+/data/Analytic Code Output/**
+!/data/Analytic Code Output/Dataset 2_American_Samoa_2-83 Mos_DeID_Full_Dataset_*.xlsx
 
 # Generated CSVs are reproducible. Review them before any authorized deployment.
 data/*.csv
