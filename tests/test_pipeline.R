@@ -9,7 +9,7 @@ dir.create(fixture,recursive=TRUE,showWarnings=FALSE)
 dir.create(file.path(fixture,"data","Raw Patient Data"),recursive=TRUE,showWarnings=FALSE)
 dir.create(file.path(fixture,"www"),recursive=TRUE,showWarnings=FALSE)
 invisible(file.copy("R",fixture,recursive=TRUE,overwrite=TRUE))
-invisible(file.copy(c("config.R","app.R","American Samoa_Coverage_Planning_Mapping_Dashboard.Rproj"),fixture,overwrite=TRUE))
+invisible(file.copy(c("config.R","app.R","AS_Coverage_Planning_Mapping_Dashboard.Rproj"),fixture,overwrite=TRUE))
 invisible(file.copy("www/styles.css",file.path(fixture,"www"),overwrite=TRUE))
 invisible(file.copy(c("data/American_Samoa_GIS_Demographics.xlsx","data/CVX Codes.xlsx"),file.path(fixture,"data"),overwrite=TRUE))
 invisible(file.create(file.path(fixture,".here")))
@@ -88,7 +88,8 @@ expected<-list(
   `Series 19-35 Months`=c("Island/Atoll","District","County","Series","Denominator","Children UTD (n)","Children UTD (%)"))
 for(name in names(expected))check(identical(names(result$tables[[name]]),expected[[name]]),paste("Requested columns:",name))
 dose_header<-names(readxl::read_excel(result$paths[["tables"]],sheet="Dose Coverage",skip=2,n_max=1))
-check(identical(dose_header,c("Island/Atoll","District","County","Age Group","Denominator","Children UTD (n)","Children UTD (%)")),"Dose Coverage exact seven columns within vaccine sections")
+check(identical(gsub("\\r", "", dose_header),c("Vaccine Dose",paste0(AS_AGE_LEVELS,"\n(n = ",c(1,1,1,2,3,1,1,1,1),")"))),
+  "Dose Coverage retains the territory-wide age matrix and cohort denominators")
 community<-readr::read_csv(file.path(fixture,"data","community_summary.csv"),show_col_types=FALSE)
 check(sum(community$child_population)==12,"Community child counts reconcile")
 tafuna<-community[community$village=="Tafuna",]
@@ -103,6 +104,54 @@ progress_path<-file.path(fixture,"data","Analytic Code Output","American_Samoa_A
 progress_text<-readLines(progress_path)
 check(any(grepl("Children assessed: 12 / 12",progress_text,fixed=TRUE)),"Live progress reports cohort completion")
 check(grepl("COMPLETE",tail(progress_text,1),fixed=TRUE),"Successful run ends with COMPLETE in the progress log")
+# Repeat with the two report roles. A newer ALLVAX file and legacy report must
+# not displace the explicitly labelled Routine file for membership.
+routine<-rr[1:10,]
+routine$City[1]<-"PAGO PAGO"
+allvax<-rr
+allvax$`Immunization Recommendations`<-"COVID-19; Influenza"
+allvax<-dplyr::bind_rows(allvax,allvax[12,])
+routine_path<-file.path(raw_dir,"RR_ALL_0-7_101926_Routine.xlsx")
+allvax_path<-file.path(raw_dir,"RR_ALL_0-7_101926_ALLVAX.xlsx")
+openxlsx::write.xlsx(routine,routine_path)
+openxlsx::write.xlsx(allvax,allvax_path)
+Sys.setFileTime(allvax_path,Sys.time()+60)
+Sys.setFileTime(file.path(raw_dir,"Reminder Recall_test.xlsx"),Sys.time()+120)
+dual<-run_as_analysis(project_dir=fixture,analysis_date=at)
+dual_full<-readxl::read_excel(dual$paths[["full"]])
+dual_deid<-readxl::read_excel(dual$paths[["deid"]])
+dual_dashboard<-readr::read_csv(file.path(fixture,"data","patient_dashboard.csv"),show_col_types=FALSE)
+check(basename(dual$input_files[["Reminder"]])==basename(routine_path),"Routine file wins over newer ALLVAX and legacy reports")
+check(basename(dual$input_files[["GeographyReminder"]])==basename(allvax_path),"ALLVAX file selected for residence")
+check(nrow(dual_full)==12 && !anyDuplicated(dual_full$patient_id),"Two report linkage retains one row per roster child")
+check(sum(dual_full$onreminder)==10 && sum(dual_deid$onreminder)==10 && sum(dual_dashboard$onreminder)==10,
+  "Full, deidentified, and dashboard reminder flags use routine membership only")
+check(all(dual_full$onreminder[dual_full$patient_id %in% ids[11:12]]==0),"ALLVAX-only children are not on routine reminder")
+check(dual_full$village[dual_full$patient_id==ids[1]]=="Aunu'u","ALLVAX residence takes precedence over routine residence")
+check(dual_full$village[dual_full$patient_id==ids[12]]!="Unknown","ALLVAX-only child gains residence")
+check(!any(grepl("COVID|Influenza",dual_full$immunization_recommendations),na.rm=TRUE),"ALLVAX recommendations never enter private dataset")
+dual_operational<-readxl::read_excel(dual$paths[["operational"]])
+check(!any(grepl("COVID|Influenza",dual_operational$immunization_recommendations),na.rm=TRUE),"Operational recommendation text stays routine-only")
+check(identical(full[order(full$patient_id),unname(AS_VACCINE_NEED_MAP)],
+  dual_full[order(dual_full$patient_id),unname(AS_VACCINE_NEED_MAP)]),"ALLVAX does not alter calculated routine vaccine needs")
+reminder_table<-dual$tables[["Reminder by Village"]]
+check(reminder_table$`Children on Reminder/Recall (n)`[reminder_table$`Island/Atoll`=="American Samoa Total"]==10,
+  "Reminder table excludes ALLVAX-only children")
+# Missing ALLVAX cities fall back to Routine; conflicting ALLVAX cities remain
+# unresolved. Conflicts in the unused source do not discard ALLVAX residence.
+city_routine<-data.frame(patient_id=c("A","B","C","C"),city=c("TAFUNA","TAFUNA","TAFUNA","AFONO"))
+city_all<-data.frame(patient_id=c("A","B","B","C","D"),city=c(NA,"TAFUNA","AFONO","AUNUU","TAFUNA"))
+city_link<-link_as_reminders(city_routine,city_all)
+check(city_link$rr_city[city_link$patient_id=="A"]=="TAFUNA","Missing ALLVAX city falls back to routine")
+check(is.na(city_link$rr_city[city_link$patient_id=="B"]) && city_link$rr_city_conflict[city_link$patient_id=="B"],
+  "Conflicting ALLVAX residence stays unresolved")
+check(city_link$rr_city[city_link$patient_id=="C"]=="AUNUU" && !city_link$rr_city_conflict[city_link$patient_id=="C"],
+  "Unambiguous ALLVAX city supersedes routine source conflict")
+check(city_link$onreminder[city_link$patient_id=="D"]==0,"ALLVAX-only ID cannot gain routine membership")
+unlink(routine_path)
+unlink(file.path(raw_dir,"Reminder Recall_test.xlsx"))
+failed<-tryCatch({run_as_analysis(project_dir=fixture,analysis_date=at,verbose=FALSE);FALSE},error=function(e)TRUE)
+check(failed,"ALLVAX alone cannot satisfy required routine input")
 message("PASS: synthetic end-to-end workflow, requested table columns, reconciliation, and export privacy")
 message("Synthetic fixture: ",fixture)
 if(nzchar(Sys.getenv("AS_TEST_FIXTURE_MARKER")))writeLines(fixture,Sys.getenv("AS_TEST_FIXTURE_MARKER"))

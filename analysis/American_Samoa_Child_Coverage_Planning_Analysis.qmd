@@ -42,13 +42,18 @@ knitr::kable(data.frame(Report = names(result$input_files),
   File = basename(result$input_files), row.names = NULL))
 ```
 
-The newest matching reports are selected when no paths are specified. Filenames
+The newest matching reports are selected when no paths are specified. Routine
+and ALLVAX reminder reports are selected separately: `*_Routine.xlsx` supplies
+routine reminder membership and recommendations; `*_ALLVAX.xlsx` supplies
+residence only. ALLVAX cannot be selected as the routine reminder input. Filenames
 may start with `Roster`, `Details`/`Detail`, or `RR`; full report names containing
 Patient Roster, Patient Details with Services, Reminder, or Recall also work.
 
 ## Geography
 
-Reminder/Recall **City** supplies residence. Its IIS label is matched to the
+ALLVAX Reminder/Recall **City** supplies residence, with Routine City as a
+fallback when missing. Without ALLVAX, Routine City supplies residence.
+Its IIS label is matched to the
 workbook's official census designation. Raw County in either patient report is
 ignored. If the city is unrecognized or its county is ambiguous, the roster
 clinic may identify a county. A clinic county does not establish a child's

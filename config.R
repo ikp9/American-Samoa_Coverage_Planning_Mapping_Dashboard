@@ -1,10 +1,14 @@
 # Change these settings before each refresh. Run from the project root.
 AS_CONFIG <- list(
-  analysis_date = as.Date("2026-09-29"),
+  analysis_date = as.Date("2026-10-19"),
   # NULL selects the newest workbook matching the documented report names.
   roster_file = NULL,
   details_file = NULL,
+  # Routine report alone defines onreminder and IIS recommendations.
   reminder_file = NULL,
+  # ALLVAX report supplies residence only; NULL discovers newest *_ALLVAX.xlsx.
+  # If absent, residence falls back to the routine report.
+  geography_reminder_file = NULL,
   geography_file = "data/American_Samoa_GIS_Demographics.xlsx",
   cvx_file = "data/CVX Codes.xlsx",
   # Optional local CSV: clinic_pattern,county (exact official county name).

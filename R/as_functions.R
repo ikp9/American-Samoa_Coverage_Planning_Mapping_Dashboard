@@ -52,14 +52,48 @@ parse_as_date <- function(x) {
   result
 }
 
-newest_matching_file <- function(directory, pattern, required = TRUE) {
+newest_matching_file <- function(directory, pattern, required = TRUE, exclude_pattern = NULL) {
   files <- list.files(directory, pattern, full.names = TRUE, ignore.case = TRUE)
   files <- files[!grepl("^~\\$", basename(files))]
+  if (!is.null(exclude_pattern)) files <- files[!grepl(exclude_pattern, basename(files), ignore.case = TRUE)]
   if (!length(files)) {
     if (!required) return(NA_character_)
     stop("No file matching ", pattern, " in ", directory, call. = FALSE)
   }
   files[[which.max(file.info(files)$mtime)]]
+}
+
+# Residence and routine membership are deliberately independent. ALLVAX never
+# contributes recommendation text or onreminder, even for an ALLVAX-only child.
+link_as_reminders <- function(routine, allvax = NULL) {
+  cities <- function(report) {
+    tibble::tibble(patient_id = extract_patient_id(report),
+      rr_city = coalesce_character_columns(report, c("city", "patient_city", "address_city"))) |>
+      dplyr::filter(!is.na(patient_id)) |> dplyr::group_by(patient_id) |>
+      dplyr::summarise(
+        rr_city_conflict = dplyr::n_distinct(normalize_as_text(rr_city), na.rm = TRUE) > 1,
+        rr_city = if (rr_city_conflict) NA_character_ else first_nonmissing(rr_city[!is.na(normalize_as_text(rr_city))]),
+        .groups = "drop")
+  }
+  membership <- tibble::tibble(patient_id = extract_patient_id(routine),
+    immunization_recommendations = coalesce_character_columns(routine, c(
+      "immunization_recommendations", "immunization_recommendation", "recommendations", "recommendation"))) |>
+    dplyr::filter(!is.na(patient_id)) |> dplyr::group_by(patient_id) |>
+    dplyr::summarise(
+      immunization_recommendations = paste(sort(unique(stats::na.omit(immunization_recommendations))), collapse = "; "),
+      onreminder = 1L, .groups = "drop")
+  residence <- cities(routine)
+  if (!is.null(allvax)) {
+    residence <- dplyr::full_join(cities(allvax), residence, by = "patient_id", suffix = c("_all", "_routine")) |>
+      dplyr::mutate(
+        use_all = !is.na(rr_city_all) | dplyr::coalesce(rr_city_conflict_all, FALSE),
+        rr_city = dplyr::if_else(use_all, rr_city_all, rr_city_routine),
+        rr_city_conflict = dplyr::if_else(use_all, rr_city_conflict_all,
+          dplyr::coalesce(rr_city_conflict_routine, FALSE))) |>
+      dplyr::select(patient_id, rr_city, rr_city_conflict)
+  }
+  dplyr::full_join(residence, membership, by = "patient_id") |>
+    dplyr::mutate(onreminder = dplyr::coalesce(onreminder, 0L))
 }
 
 extract_patient_id <- function(data) {

@@ -53,9 +53,22 @@ run_as_analysis <- function(project_dir=NULL,analysis_date=NULL,verbose=TRUE) {
       path
     }
   }
+  # Prefer explicitly labelled Routine reports. Legacy names remain supported,
+  # but an ALLVAX workbook can never be auto-selected for routine membership.
+  routine_file<-if(!is.null(config$reminder_file))pick(config$reminder_file,"") else {
+    candidate<-newest_matching_file(raw_dir,"(^RR.*|.*Reminder.*|.*Recall.*)_Routine\\.xlsx$",required=FALSE)
+    if(is.na(candidate))newest_matching_file(raw_dir,"(^RR.*|.*Reminder.*|.*Recall.*)\\.xlsx$",
+      exclude_pattern="ALLVAX") else candidate
+  }
+  if(grepl("ALLVAX",basename(routine_file),ignore.case=TRUE))
+    stop("reminder_file must be the Routine report; use geography_reminder_file for ALLVAX.",call.=FALSE)
+  geography_reminder_file<-if(!is.null(config$geography_reminder_file))pick(config$geography_reminder_file,"") else
+    newest_matching_file(raw_dir,"(^RR.*|.*Reminder.*|.*Recall.*)_ALLVAX\\.xlsx$",required=FALSE)
   files<-c(Roster=pick(config$roster_file,"(^Roster.*|.*Patient.?Roster.*)\\.xlsx$"),
     Details=pick(config$details_file,"(^Details?.*|.*Patient.?Details?.*Services.*)\\.xlsx$"),
-    Reminder=pick(config$reminder_file,"(^RR.*|.*Reminder.*|.*Recall.*)\\.xlsx$"))
+    Reminder=routine_file)
+  if(!is.na(geography_reminder_file))files<-c(files,GeographyReminder=geography_reminder_file)
+  for(i in seq_along(files))progress(paste("Input",names(files)[i],":",basename(files[i])))
   reports<-lapply(seq_along(files),function(i) {
     progress(paste("Reading",names(files)[i],"report..."))
     report<-clean_report_names(readxl::read_excel(files[i],guess_max=100000))
@@ -78,15 +91,7 @@ run_as_analysis <- function(project_dir=NULL,analysis_date=NULL,verbose=TRUE) {
   roster_cohort<-roster_clean |> dplyr::filter(!is.na(as_age_group(age_months_at(dob,analysis_date))))
   if(!nrow(roster_cohort))stop("No active children aged 2-83 months as of the analysis date.")
   progress(sprintf("Active children aged 2-83 months: %s",format(nrow(roster_cohort),big.mark=",")))
-  rr<-tibble::tibble(patient_id=extract_patient_id(reminder),
-    rr_city=coalesce_character_columns(reminder,c("city","patient_city","address_city")),
-    immunization_recommendations=coalesce_character_columns(reminder,c(
-      "immunization_recommendations","immunization_recommendation","recommendations","recommendation"))) |>
-    dplyr::filter(!is.na(patient_id)) |> dplyr::group_by(patient_id) |> dplyr::summarise(
-      rr_city_conflict=dplyr::n_distinct(normalize_as_text(rr_city),na.rm=TRUE)>1,
-      rr_city=if(rr_city_conflict)NA_character_ else first_nonmissing(rr_city),
-      immunization_recommendations=paste(sort(unique(stats::na.omit(immunization_recommendations))),collapse="; "),
-      onreminder=1L,.groups="drop")
+  rr<-link_as_reminders(reminder,reports$GeographyReminder)
   progress("Assigning census geography and clinic county fallback...")
   geography<-read_as_geography(file.path(project_dir,config$geography_file))
   override_path<-file.path(project_dir,config$clinic_county_overrides)
@@ -137,11 +142,14 @@ run_as_analysis <- function(project_dir=NULL,analysis_date=NULL,verbose=TRUE) {
     Measure=c("Roster rows read","Rows excluded (status / ID / DOB)","Active children aged 2-83 months",
       "Included children with unspecified roster status","Children UTD for core series","Children on reminder/recall",
       "Children with missing/ambiguous village or county","Conflicting RR cities","Unmapped CVX report rows",
-      "Invalid tracked antigen doses (age/interval/max-age)","Reminder IDs absent from active roster"),
+      "Invalid tracked antigen doses (age/interval/max-age)","Reminder IDs absent from active roster",
+      "Children with residence from ALLVAX only"),
     Value=c(nrow(roster),nrow(roster)-nrow(roster_clean),nrow(analytic_full),sum(analytic_full$roster_status_unknown),
       sum(analytic_full$utd==1),sum(analytic_full$onreminder==1),sum(analytic_full$village=="Unknown"|!analytic_full$county_resolved),
       sum(analytic_full$rr_city_conflict %in% TRUE),sum(history$cvx_issues$`Rows (n)`[history$cvx_issues$issue=="Unmapped CVX (excluded)"]),
-      sum(as.matrix(analytic_full[paste0(names(AS_CVX_CODES),"_invalid_doses")])),sum(!rr$patient_id %in% roster_clean$patient_id)))
+      sum(as.matrix(analytic_full[paste0(names(AS_CVX_CODES),"_invalid_doses")])),
+      sum(rr$onreminder==1 & !rr$patient_id %in% roster_clean$patient_id),
+      sum(analytic_full$onreminder==0 & !is.na(analytic_full$rr_city))))
   paths<-c(full=file.path(output_dir,paste0("Dataset 1_American_Samoa_2-83 Mos_Full_Dataset_",date_stamp,".xlsx")),
     deid=file.path(output_dir,paste0("Dataset 2_American_Samoa_2-83 Mos_DeID_Full_Dataset_",date_stamp,".xlsx")),
     operational=file.path(output_dir,paste0("American_Samoa_Patients_Needing_Vaccination_",date_stamp,".xlsx")),

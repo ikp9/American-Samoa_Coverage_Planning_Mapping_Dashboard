@@ -10,13 +10,15 @@ are not included. There are no precomputed American Samoa coverage estimates.
 ## Run the project
 
 1. In the R console, run `source("R/install_packages.R")` once.
-3. Put the three American Samoa Excel reports in `data/Raw Patient Data/`:
-   Patient Roster, Patient Details with Services, and Reminder/Recall.
+3. Put the American Samoa Excel reports in `data/Raw Patient Data/`:
+   Patient Roster, Patient Details with Services, routine Reminder/Recall,
+   and optionally the all-vaccine Reminder/Recall for residence.
    Names beginning `Roster`, `Details`/`Detail`, and `RR` also work. The newest
-   matching file is chosen by modification time. To select a specific report,
-   set its path in `config.R`.
+   matching roster/details file is chosen by modification time. Reminder inputs
+   have separate roles (see below). To select specific reports, set their paths
+   in `config.R`.
 4. Set `analysis_date` in **config.R** to the assessment date. The supplied default
-   is September 30, 2026. Review the product settings described below.
+   is October 19, 2026. Review the product settings described below.
 5. Open **RUN_ANALYSIS.R** and click **Source** in RStudio. The Console shows
    each stage and a child counter every 100 children. This produces the Excel
    tables and dashboard CSVs directly. Wait for **COMPLETE**.
@@ -64,10 +66,35 @@ from R without Quarto.
 | `R/as_tables.R` | Requested summary table columns and formatting |
 | `R/prepare_data.R` | Dashboard summaries and CSVs |
 | `app.R`, `www/styles.css` | Shiny dashboard and retained visual styling |
-| `data/Raw Patient Data/` | Three local input reports |
+| `data/Raw Patient Data/` | Roster, details, routine reminder, optional ALLVAX residence report |
 | `data/Analytic Code Output/` | Generated patient files, eight-table workbook, audit/QA files |
 | `tests/` | Synthetic schedule and end-to-end checks |
 | `.gitignore` | Protects raw reports and generated patient data while allowing code and public references |
+
+## Reminder/recall inputs
+
+For the October 19 reports, place both `RR_ALL_0-7_101926_Routine.xlsx` and
+`RR_ALL_0-7_101926_ALLVAX.xlsx` in `data/Raw Patient Data/`.
+
+- `reminder_file` selects the **Routine** report. Only its patient membership
+  sets `onreminder` (the dashboard's reminder flag), and only its recommendations
+  enter the private full dataset and patients needing vaccination workbook.
+  This report should include DTaP, IPV, MMR, Hib, HepB, PCV, rotavirus, HepA,
+  and varicella. COVID-19/flu-only children in ALLVAX receive `onreminder = 0`.
+- `geography_reminder_file` selects **ALLVAX** for City/residence. Its additional
+  children can gain village data without increasing routine reminder counts.
+  ALLVAX recommendations never enter vaccine planning or patient exports.
+- With NULL settings, the newest `*_Routine.xlsx` and `*_ALLVAX.xlsx` are selected
+  separately. Without a labelled Routine file, legacy RR/Reminder/Recall names
+  still work; ALLVAX is excluded from routine selection. An explicitly configured
+  `reminder_file` containing ALLVAX in its name is rejected.
+- ALLVAX City takes precedence. Missing City or absence from ALLVAX falls back
+  to Routine City. Conflicting cities within the selected source remain flagged
+  and unresolved. If no ALLVAX report exists, residence uses Routine as before.
+- Coverage denominators remain the active roster cohort. Dose eligibility and
+  product needs remain calculated from vaccine histories and the existing
+  age/interval rules; reminder membership does not override those calculations.
+  Both input filenames are shown in the run log and Quarto input inventory.
 
 ## Geography rules
 
