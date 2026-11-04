@@ -92,6 +92,17 @@ check(identical(gsub("\\r", "", dose_header),c("Vaccine Dose",paste0(AS_AGE_LEVE
   "Dose Coverage retains the territory-wide age matrix and cohort denominators")
 community<-readr::read_csv(file.path(fixture,"data","community_summary.csv"),show_col_types=FALSE)
 check(sum(community$child_population)==12,"Community child counts reconcile")
+priority_path<-result$paths[["village_priority"]]
+priority_export<-readxl::read_excel(priority_path,sheet="Village scores",skip=2)
+check(nrow(priority_export)==nrow(community),"Village priority workbook retains every dashboard community")
+check(all(priority_export$county==community$county & priority_export$district==community$district &
+  priority_export$village==community$village & priority_export$priority_rank==community$priority_rank),
+  "Village priority workbook preserves county splits and ranking order")
+check(all(priority_export$priority_score==community$priority_score),"Village priority workbook scores match the dashboard")
+check(identical(priority_export$priority_group,community$priority_group),"Village workbook uses reviewed priority groups")
+check(identical(names(priority_export),names(village_priority_export(community))),"Village workbook uses the requested indicator order")
+check(!any(grepl("patient_id|name|contact|address|birth|^dob$",names(priority_export),ignore.case=TRUE)),
+  "Village priority workbook contains aggregate indicators only")
 tafuna<-community[community$village=="Tafuna",]
 check(length(unique(tafuna$population))==1,"Alias rows use one parent-village population value")
 check(any(result$product_audit$cvx=="146") && any(result$product_audit$cvx=="110"),"Combination frequency audit includes observed products")

@@ -3,7 +3,7 @@ American Samoa vaccination coverage, planning, and mapping dashboard
 
 # American Samoa Coverage Planning and Mapping Dashboard
 
-This project adapts the child Quarto analysis and five-page Shiny dashboard for
+This project adapts the child Quarto analysis and Shiny dashboard for
 American Samoa. The GIS/demographic and CVX workbooks are included. Patient reports
 are not included. There are no precomputed American Samoa coverage estimates.
 
@@ -52,6 +52,37 @@ source("RUN_ANALYSIS.R")
 R 4.2 or later is required for the native pipe used by these files. Quarto is
 required only to render the HTML analysis report. The pipeline can run entirely
 from R without Quarto.
+
+## Seasonal flu coverage
+
+The **Seasonal Flu Coverage** page shows one cumulative coverage figure for
+American Samoa overall. Select any of the five Census age groups; the dashed
+Total line combines the selected groups using their summed Census populations.
+The population and dose cards follow the same selection. The chart scale can
+be adjusted to inspect low coverage.
+
+Place `Dataset 3_American_Samoa_Flu_DeID_MMDDYY.xlsx` in
+`data/Analytic Code Output/` and `Census_Flu_2026.xlsx` in `data/`. The newest
+dated flu export is selected. Denominators use the workbook's **AmSam** sheet:
+6 months–4 years, 5–12 years, 13–17 years, 18–64 years, and 65+ years.
+Numerators retain the extract's exported `agegroup` categories. Coverage counts
+each row/person once after their first seasonal `flu_date` vaccination. The
+dose card counts distinct person/date events. Results include completed months
+from July 1 through the analysis cutoff; they measure at least one dose.
+
+Legacy flu exports lack `analysis_date`. Record the completed reporting cutoff
+and season start for each exact filename in `data/seasonal_flu_settings.csv`
+(`source_file,season_start,reporting_through`). The supplied extract's last
+assessed coverage column is September, so its reporting cutoff is September 30,
+2026. The export filename's date is used only to select the file, never as its
+analysis cutoff. When a future extract includes `analysis_date`, that exported
+field takes precedence and only completed months are included. The shared
+header always displays **Data through [end of last assessment month]** on the
+flu page; child pages retain **Data as of** with their own exported date.
+A missing input or unrecorded cutoff displays an
+unavailable message without blocking the child pages.
+
+Run `Rscript tests/test_seasonal_flu.R` to check the seasonal calculations.
 
 ## Project files
 
@@ -230,24 +261,59 @@ fewer doses. This prevents calling a catch-up-adjusted metric a literal 4:3:1:3:
 
 ## Dashboard and refresh
 
-Five pages retain the CNMI structure: Situation overview, Vaccination coverage,
-Vaccination planning, Community risk & access, and Data quality & methods.
+The dashboard has five pages: Child Situation Overview, Child Vaccination Coverage,
+Vaccination planning, Community Profile (Child Data), and Data quality & methods.
+Every current and future page must display **Data as of [as of date]** at the top.
+The shared `page_navbar()` header provides this automatically, using the exported
+patient data's `analysis_date` rather than the current date or a changed config.
+Preserve this shared header when adding pages; any separate page layout must
+include the same date line.
 Island/Atoll, District, County, and Village selectors cascade, and age filters
-apply to coverage/planning. The Situation overview card is labeled **Children
+apply to coverage/planning. The Child Situation Overview card is labeled **Children
 2 - 83 months**. Coverage maps use <65%, 65-<85%, and >=85% legend categories.
 Maps use explicit OpenStreetMap tiles without an API key; circle markers do not
 use the unsupported `highlightOptions` argument.
 
-Priority scoring retains the CNMI 90/1/1/4/4 community-risk/access/density/
-transmission/burden weighting. The 4% burden component splits equally between
+Community Profile uses Island/Atoll, then District, then Village selectors.
+Each choice narrows the next selector. County names distinguish village entries
+that have separate county rows within the same district.
+Its component chart shows raw scores on a common 0-100 scale, all-community
+median markers, and 90%/5%/5% weighted contributions. A scrollable heatmap compares
+all villages in reviewed priority order; clicking a row selects its island,
+district and village profile. Burden retains the American Samoa blend of
+high-risk child counts and Census village population size.
+
+Priority scoring uses community patient risk, density-adjusted transmission,
+and burden with weights of 90%, 5%, and 5%, respectively.
+Inter-island access and low-density access difficulty are excluded.
+The burden component splits equally between
 observed IIS high-risk child burden and the Census village population-size
-percentile. Off-Tutuila islands use an inter-island-access
-proxy; census village density replaces CNMI region density. Each reference
+percentile. Census village density informs transmission potential. Each reference
 village is ranked once for population/density, even when clinic data splits its
 residents between counties. No-history children
 receive the maximum recency-risk component. Missing geography/density is flagged
 and uses a neutral missing-component score rather than silently zero risk.
 Scores are relative planning measures, not validated outbreak probabilities.
+
+Each dashboard refresh also writes `American_Samoa_Village_Priority_Indicators_MMDDYY.xlsx`
+in `data/Analytic Code Output/`, dated from the exported `analysis_date`.
+The workbook includes village scores, ranks and groups, underlying risk and Census
+indicators in the requested 30-column order, starting with county, district and
+village, plus an indicator guide explaining the 90%/5%/5% calculation.
+County splits are retained to match dashboard rows; repeated Census references
+must not be summed. Scores and ranks are snapshots for the exported analysis date.
+
+The FSM/RMI small-denominator review rule applies to prepared and cached data:
+all village rows with 10 or fewer cohort children are reduced from High to Moderate.
+All rows with 10 or fewer children receive a Small denominator flag alongside
+any other quality flags. Numerical scores are unchanged. Rankings list High,
+Moderate, then Low, with small-denominator High-to-Moderate villages below other
+Moderate villages. Each block is ranked by descending score, with minimum-rank
+ties. The dashboard CSV retains `priority_score_rank`, `priority_group_before_review`
+and `small_denominator`; the Excel workbook contains the requested indicator columns.
+Unknown village/county rows with more than 30 children are High and receive a
+Data quality review required flag. Counts use each row's cohort children;
+Unknown rows with 11-30 children follow the score/coverage rules.
 
 For each refresh, update reports/date, rerun the pipeline, review QA, and restart
 the app. The app uses computed CSVs and does not rewrite Hib/PCV status from raw

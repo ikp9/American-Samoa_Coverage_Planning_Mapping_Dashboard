@@ -47,3 +47,7 @@ Archive/
 **/Archive/
 rsconnect/
 
+# Non-patient flu reference data and per-export completed reporting dates.
+!data/Census_Flu_2026.xlsx
+!data/seasonal_flu_settings.csv
+

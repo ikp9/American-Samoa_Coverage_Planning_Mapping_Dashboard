@@ -37,6 +37,15 @@ source(functions_file, local = FALSE)
 
 source(here::here("config.R"), local = FALSE)
 source(prepare_data_file, local = FALSE)
+source(here::here("R", "seasonal_flu.R"), local = FALSE)
+seasonal_flu <- load_as_seasonal_flu(
+  here::here("data", "Analytic Code Output"),
+  here::here("data", "Census_Flu_2026.xlsx"),
+  here::here("data", "seasonal_flu_settings.csv")
+)
+flu_default_ymax <- if (is.null(seasonal_flu$error)) {
+  max(1, ceiling(max(seasonal_flu$curves$coverage) * 1.1))
+} else 10
 drop_excluded_columns <- function(data) {
   data |> select(-matches("rsv|nirsevimab|clesrovimab|beyfortus|enflonsia", ignore.case=TRUE))
 }
@@ -65,18 +74,56 @@ if (length(missing_dashboard_files) > 0) {
   )
 }
 
-community <- read_csv(dashboard_files[["community"]], show_col_types=FALSE) |> drop_excluded_columns()
+community <- read_csv(dashboard_files[["community"]], show_col_types=FALSE) |>
+  drop_excluded_columns() |> apply_community_priority_review() |> arrange(priority_rank,island_atoll,district,county,village)
 vax_needs <- read_csv(dashboard_files[["vaccine_needs"]], show_col_types=FALSE) |> drop_excluded_columns()
 product_needs <- read_csv(dashboard_files[["product_needs"]], show_col_types=FALSE) |> drop_excluded_columns()
 patient <- read_csv(dashboard_files[["patient"]], show_col_types=FALSE) |> drop_excluded_columns()
 quality <- read_csv(dashboard_files[["quality"]], show_col_types=FALSE) |> drop_excluded_columns()
+quality <- quality |>
+  left_join(community |> select(island_atoll,district,county,village,review_flag=data_quality_flag),
+    by=c("island_atoll","district","county","village")) |>
+  mutate(coordinate_status=coalesce(review_flag,coordinate_status)) |> select(-review_flag)
 if (nrow(patient)==0) stop("Dashboard data have no children. Run the analysis first.")
 
 # ==============================================================================
 # Display settings and helpers
 # ==============================================================================
 
+dashboard_dates <- sort(unique(as.Date(patient$analysis_date)))
+dashboard_as_of <- if (length(dashboard_dates) > 0) {
+  paste(format(dashboard_dates, "%B %d, %Y"), collapse = "; ")
+} else {
+  "Unavailable"
+}
+
 region_choices <- c("American Samoa", sort(unique(patient$island_atoll)))
+
+profile_village_choices <- function(x) {
+  x <- x[order(x$village, x$county), , drop = FALSE]
+  split_village <- duplicated(x$village) | duplicated(x$village, fromLast = TRUE)
+  labels <- ifelse(split_village, paste0(x$village, " (", x$county, ")"), x$village)
+  setNames(x$community_id, labels)
+}
+profile_initial <- community[1, ]
+profile_selection <- function(data, id) {
+  row <- data[data$community_id %in% id, , drop = FALSE]
+  if (nrow(row) != 1) stop("Select one valid community.")
+  list(island = row$island_atoll, district = row$district, community_id = row$community_id,
+    districts = sort(unique(data$district[data$island_atoll == row$island_atoll])),
+    villages = profile_village_choices(data[data$island_atoll == row$island_atoll &
+      data$district == row$district, , drop = FALSE]))
+}
+priority_component_columns <- c("community_patient_risk_component", "transmission_component", "burden_component")
+priority_component_labels <- c("Community patient risk", "Density-adjusted transmission", "Child burden / Census population")
+priority_component_weights <- c(0.90, 0.05, 0.05)
+score_label <- function(x) ifelse(is.na(x), "N/A", sprintf("%.1f", x))
+profile_component_summary <- function(x, reference) {
+  scores <- as.numeric(unlist(x[priority_component_columns], use.names = FALSE))
+  data.frame(component = priority_component_labels, score = scores,
+    weight = priority_component_weights, points = scores * priority_component_weights,
+    median = vapply(reference[priority_component_columns], safe_median, numeric(1)), row.names = NULL)
+}
 
 age_choices <- c(
   "2-3 months" = "2_3",
@@ -226,15 +273,20 @@ planning_product_order <- names(AS_PRODUCT_MAP)
 # ==============================================================================
 
 ui <- page_navbar(
+  id = "dashboard_page",
   title = "American Samoa Coverage Planning",
   fillable = FALSE,
   theme = bs_theme(version = 5, primary = "#0056A6", navbar_bg = "#003E73"),
-  header = tags$head(
-    if (file.exists(styles_file)) tags$link(rel = "stylesheet", href = "styles.css")
+  # Keep the assessment date in the shared header so future pages inherit it.
+  header = tagList(
+    tags$head(
+      if (file.exists(styles_file)) tags$link(rel = "stylesheet", href = "styles.css")
+    ),
+    uiOutput("dashboard_data_as_of")
   ),
 
   nav_panel(
-    "Situation overview",
+    "Child Situation Overview",
     layout_sidebar(
       fillable = FALSE,
       sidebar = sidebar(
@@ -244,9 +296,9 @@ ui <- page_navbar(
         p(
           class = "small-note",
           paste0(
-            "Priority score: 90% community patient risk, 1% inter-island access, ",
-            "1% low-density access difficulty, 4% density-adjusted transmission ",
-            "potential, and 4% child burden / census population size."
+            "Priority score: 90% community patient risk, ",
+            "5% density-adjusted transmission potential, and ",
+            "5% child burden / census population size."
           )
         )
       ),
@@ -296,7 +348,7 @@ ui <- page_navbar(
   ),
 
   nav_panel(
-    "Vaccination coverage",
+    "Child Vaccination Coverage",
     layout_sidebar(
       fillable = FALSE,
       sidebar = sidebar(
@@ -335,6 +387,40 @@ ui <- page_navbar(
         p(class = "small-note map-note", "Marker size represents the eligible denominator for the selected vaccine."),
         leafletOutput("vaccination_coverage_map", height = "460px")
       )
+    )
+  ),
+
+  nav_panel(
+    "Seasonal Flu Coverage", value = "seasonal_flu",
+    layout_sidebar(
+      fillable = FALSE,
+      sidebar = sidebar(
+        selectizeInput("flu_ages", "Age group", choices = AS_FLU_AGES,
+          selected = AS_FLU_AGES, multiple = TRUE,
+          options = list(plugins = list("remove_button"))),
+        sliderInput("flu_ymax", "Coverage scale maximum (%)", min = 1,
+          max = max(100, flu_default_ymax), value = flu_default_ymax, step = 1),
+        p(class = "small-note", "Total combines the selected age groups. Adjust the scale to magnify low coverage. Scroll or drag on the chart to zoom; double-click to reset.")
+      ),
+      uiOutput("flu_reporting_period"),
+      layout_columns(
+        value_box(title = "Population size", value = textOutput("flu_population"),
+          showcase = icon("users"), class = "overview-value-box"),
+        value_box(title = "Influenza doses administered", value = textOutput("flu_doses"),
+          showcase = icon("shield"), class = "overview-value-box"),
+        col_widths = c(6, 6)
+      ),
+      card(
+        full_screen = TRUE,
+        card_header("American Samoa: cumulative seasonal influenza vaccination coverage"),
+        plotlyOutput("flu_coverage", height = "440px")
+      ),
+      p(class = "small-note", paste0(
+        "Coverage counts each person once after their first qualifying seasonal dose, divided by the Census population. ",
+        "The dose card counts distinct seasonal doses. Ages follow the five age groups in the analytic extract. ",
+        "Coverage measures receipt of at least one dose. Monthly results use completed months through the analysis cutoff. ",
+        "Population denominators come from the AmSam sheet of Census_Flu_2026.xlsx. ",
+        "Results cover American Samoa overall; no geographic breakdown is available."))
     )
   ),
 
@@ -395,24 +481,54 @@ ui <- page_navbar(
   ),
 
   nav_panel(
-    "Community risk & access",
+    "Community Profile (Child Data)",
     layout_sidebar(
       fillable = FALSE,
       sidebar = sidebar(
+        selectInput("profile_island", "Island/Atoll",
+          choices = sort(unique(community$island_atoll)), selected = profile_initial$island_atoll),
+        selectInput("profile_district", "District",
+          choices = sort(unique(community$district[community$island_atoll == profile_initial$island_atoll])),
+          selected = profile_initial$district),
         selectizeInput(
           "community_id",
           "Village",
-          choices = setNames(
-            community$community_id,
-            paste(community$island_atoll, community$district, community$county, community$village, sep = " - ")
+          choices = profile_village_choices(community |>
+            filter(island_atoll == profile_initial$island_atoll, district == profile_initial$district)),
+          selected = profile_initial$community_id
+        ),
+        tags$hr(),
+        div(
+          class = "small-note",
+          h5("What does the priority score mean?"),
+          p("The score runs from 0 to 100. A higher score means the village needs more attention for vaccination planning."),
+          tags$ul(
+            tags$li(strong("90% — Children's vaccination needs: "),
+              "How far behind children are on recommended vaccines, especially MMR, and how long it has been since their last vaccination."),
+            tags$li(strong("5% — Potential for spread: "),
+              "How closely people live together, combined with children's vaccination needs."),
+            tags$li(strong("5% — Number of people needing attention: "),
+              "The number of high-risk children and the village's Census population size.")
           ),
-          selected = community$community_id[[1]]
+          p("The High, Moderate or Low label also considers vaccination coverage. A High village with 10 or fewer children is shown as Moderate and placed below other Moderate villages. Its score stays the same."),
+          p("Unknown locations with more than 30 children are marked High so their data can be reviewed.")
         )
       ),
       layout_columns(
         card(card_header("Village profile"), uiOutput("community_profile")),
-        card(card_header("Priority-score components"), plotlyOutput("components_plot", height = "340px")),
+        card(
+          card_header("Priority-score components"),
+          tags$p(class = "small-note", "Raw scores use a shared 0–100 scale. Black markers show the median across all communities. The labels show each component's weighted contribution to the total score."),
+          plotlyOutput("components_plot", height = "390px", fill = FALSE),
+          tags$p(class = "small-note", "Patient risk contributes 90%, transmission 5%, and burden 5%. Burden combines high-risk child counts with Census village population size.")
+        ),
         col_widths = c(5, 7)
+      ),
+      card(
+        full_screen = TRUE,
+        card_header("Compare village priority components"),
+        tags$p(class = "small-note", "All communities in reviewed priority order. Cells show raw scores before weighting; darker means higher. Labels show rank and total priority score. Click a row to open its profile. The selected village is marked with an arrow. Missing scores are shown as N/A."),
+        div(class = "priority-heatmap-scroll", uiOutput("priority_heatmap_ui"))
       ),
       layout_columns(
         card(card_header("Children due by vaccine type"), DTOutput("community_vaccine_table")),
@@ -459,6 +575,36 @@ ui <- page_navbar(
 # ==============================================================================
 
 server <- function(input, output, session) {
+  output$dashboard_data_as_of <- renderUI({
+    if (identical(input$dashboard_page, "seasonal_flu")) {
+      label <- if (is.null(seasonal_flu$error)) format(seasonal_flu$through, "%B %d, %Y") else "Unavailable"
+      tags$p(class = "data-as-of", paste("Data through", label))
+    } else tags$p(class = "data-as-of", paste("Data as of", dashboard_as_of))
+  })
+  selected_flu_ages <- reactive(intersect(AS_FLU_AGES, input$flu_ages))
+  output$flu_reporting_period <- renderUI({
+    if (!is.null(seasonal_flu$error)) return(p(class = "small-note", seasonal_flu$error))
+    year <- as.integer(format(seasonal_flu$season_start, "%Y"))
+    p(class = "small-note", paste0(year, "–", year + 1,
+      " season | Reporting through ", format(seasonal_flu$through, "%B %Y")))
+  })
+  output$flu_population <- renderText({
+    if (!is.null(seasonal_flu$error)) return("Unavailable")
+    if (!length(selected_flu_ages())) return("Select an age group")
+    x <- seasonal_flu$population
+    format(sum(x$population[x$age_group %in% selected_flu_ages()]), big.mark = ",", trim = TRUE)
+  })
+  output$flu_doses <- renderText({
+    if (!is.null(seasonal_flu$error)) return("Unavailable")
+    if (!length(selected_flu_ages())) return("Select an age group")
+    x <- seasonal_flu$doses
+    format(sum(x$doses[x$age_group %in% selected_flu_ages()]), big.mark = ",", trim = TRUE)
+  })
+  output$flu_coverage <- renderPlotly({
+    validate(need(is.null(seasonal_flu$error), seasonal_flu$error),
+      need(length(selected_flu_ages()) > 0, "Select at least one age group."))
+    as_flu_plot(seasonal_flu, selected_flu_ages(), input$flu_ymax)
+  })
   for(prefix_value in c("overview","coverage","planning")) local({
     prefix<-prefix_value
     subset_for<-function(level) {
@@ -819,8 +965,43 @@ server <- function(input, output, session) {
     )
   })
 
+  profile_target <- reactiveVal(NULL)
+  observeEvent(input$profile_island, {
+    districts <- sort(unique(community$district[community$island_atoll == input$profile_island]))
+    req(length(districts) > 0)
+    selected <- if (isTRUE(input$profile_district %in% districts)) input$profile_district else districts[[1]]
+    target <- community[community$community_id %in% profile_target(), , drop = FALSE]
+    if (nrow(target) == 1 && target$island_atoll == input$profile_island) selected <- target$district
+    updateSelectInput(session, "profile_district", choices = districts, selected = selected)
+  }, ignoreInit = FALSE)
+
+  observeEvent(list(input$profile_island, input$profile_district), {
+    req(input$profile_island, input$profile_district)
+    x <- community |>
+      filter(island_atoll == input$profile_island, district == input$profile_district)
+    req(nrow(x) > 0)
+    choices <- profile_village_choices(x)
+    selected <- if (isTRUE(input$community_id %in% choices)) input$community_id else unname(choices[[1]])
+    if (isTRUE(profile_target() %in% choices)) selected <- profile_target()
+    freezeReactiveValue(input, "community_id")
+    updateSelectizeInput(session, "community_id", choices = choices, selected = selected)
+  }, ignoreInit = FALSE)
+
+  observe({
+    target <- profile_target()
+    if (!is.null(target) && isTRUE(input$community_id == target)) {
+      row <- community[community$community_id == target, , drop = FALSE]
+      if (nrow(row) == 1 && isTRUE(input$profile_island == row$island_atoll) &&
+          isTRUE(input$profile_district == row$district)) profile_target(NULL)
+    }
+  })
+
   selected_community <- reactive({
-    community |> filter(community_id == input$community_id) |> slice(1)
+    req(input$profile_island, input$profile_district, input$community_id)
+    x <- community |> filter(community_id == input$community_id,
+      island_atoll == input$profile_island, district == input$profile_district)
+    req(nrow(x) == 1)
+    x
   })
 
   output$community_profile <- renderUI({
@@ -831,7 +1012,11 @@ server <- function(input, output, session) {
       h3(x$village),
       h5(paste(x$island_atoll,x$district,x$county,sep=" | ")),
       tags$hr(),
-      tags$p(strong("Priority: "), x$priority_score, " (", x$priority_group, ")"),
+      tags$p(strong("Priority score: "), score_label(x$priority_score), " / 100"),
+      tags$p(strong("Priority rank: "), x$priority_rank),
+      tags$p(strong("Priority level: "), x$priority_group),
+      if (isTRUE(x$small_denominator) && x$priority_group_before_review != x$priority_group)
+        tags$p("Small denominator review: High changed to Moderate (10 or fewer children). Ranked below other Moderate villages, ordered by score."),
       tags$p(strong("Children: "), x$child_population),
       tags$p(strong("Not UTD: "), x$children_not_utd, " (", round(x$proportion_not_utd, 1), "%)"),
       tags$p(strong("MMR coverage: "), round(x$mmr_coverage, 1), "%"),
@@ -849,50 +1034,105 @@ server <- function(input, output, session) {
 
   output$components_plot <- renderPlotly({
     x <- selected_community()
-    req(nrow(x) == 1)
+    d <- profile_component_summary(x, community)
+    rows <- c(3, 2, 1)
+    shapes <- annotations <- list()
+    for (i in seq_along(rows)) {
+      row <- rows[i]
+      shapes[[length(shapes) + 1]] <- list(type = "rect", x0 = 0, x1 = 100,
+        y0 = row - 0.10, y1 = row + 0.10, fillcolor = "#e8edf2",
+        line = list(width = 0), layer = "below")
+      if (!is.na(d$median[i])) shapes[[length(shapes) + 1]] <- list(type = "line",
+        x0 = d$median[i], x1 = d$median[i], y0 = row - 0.17, y1 = row + 0.17,
+        line = list(color = "#172b4d", width = 3))
+      annotations[[length(annotations) + 1]] <- list(x = 0, y = row + 0.32,
+        xanchor = "left", showarrow = FALSE,
+        text = paste0("<b>", d$component[i], "</b>"), font = list(size = 12))
+      annotations[[length(annotations) + 1]] <- list(x = 0, y = row - 0.31,
+        xanchor = "left", showarrow = FALSE,
+        text = paste0("Score ", score_label(d$score[i]), "/100 · Weight ", d$weight[i] * 100,
+          "%<br>Adds ", score_label(d$points[i]), " points · Median ", score_label(d$median[i])),
+        align = "left", font = list(size = 11, color = "#425466"))
+    }
+    plot_ly() |>
+      add_bars(x = d$score, y = rows, orientation = "h", width = 0.20,
+        marker = list(color = "#167d9a"),
+        text = paste0(d$component, "<br>Score: ", score_label(d$score), "/100",
+          "<br>All-community median: ", score_label(d$median),
+          "<br>Weight: ", d$weight * 100, "%<br>Contribution: ", score_label(d$points), " points"),
+        hoverinfo = "text") |>
+      layout(shapes = shapes, annotations = annotations, showlegend = FALSE,
+        xaxis = list(title = "Component score (before weighting)", range = c(0, 100),
+          tickvals = seq(0, 100, 25), fixedrange = TRUE),
+        yaxis = list(title = "", range = c(0.45, 3.55), showticklabels = FALSE,
+          showgrid = FALSE, zeroline = FALSE, fixedrange = TRUE),
+        margin = list(l = 15, r = 15, t = 10, b = 55)) |>
+      config(displayModeBar = FALSE)
+  })
 
-    data <- tibble(
-      component = c(
-        "Community patient risk",
-        "Inter-island access",
-        "Low-density access difficulty",
-        "Density-adjusted transmission",
-        "Child burden / census population"
-      ),
-      score = c(
-        x$community_patient_risk_component,
-        x$island_access_component,
-        x$low_density_component_for_score,
-        x$transmission_component,
-        x$burden_component
-      ),
-      weight = c(0.90, 0.01, 0.01, 0.04, 0.04)
-    ) |>
-      mutate(component = factor(component, levels = rev(component)))
+  priority_heatmap_data <- reactive({
+    community |> arrange(priority_rank, island_atoll, district, county, village)
+  })
+  output$priority_heatmap_ui <- renderUI({
+    plotlyOutput("priority_heatmap", height = paste0(max(440, 32 * nrow(community) + 120), "px"), fill = FALSE)
+  })
+  output$priority_heatmap <- renderPlotly({
+    x <- priority_heatmap_data()
+    req(nrow(x) > 0)
+    scores <- as.matrix(x[priority_component_columns])
+    split_village <- duplicated(x$village) | duplicated(x$village, fromLast = TRUE)
+    village_labels <- ifelse(split_village, paste0(x$village, " (", x$county, ")"), x$village)
+    selected_id <- if (is.null(input$community_id)) "" else input$community_id
+    labels <- paste0(ifelse(x$community_id == selected_id, "→ ", ""),
+      "#", x$priority_rank, "  ", village_labels, " · ", score_label(x$priority_score))
+    hover <- matrix("", nrow = nrow(x), ncol = 3)
+    annotations <- list()
+    for (j in seq_len(3)) {
+      for (i in seq_len(nrow(x))) {
+        hover[i, j] <- paste0("<b>", htmltools::htmlEscape(x$village[i]), "</b><br>",
+          htmltools::htmlEscape(paste(x$island_atoll[i], x$district[i], x$county[i], sep = " / ")),
+          "<br>", priority_component_labels[j], "<br>Raw score: ", score_label(scores[i, j]),
+          "/100<br>Weight: ", priority_component_weights[j] * 100,
+          "%<br>Contribution: ", score_label(scores[i, j] * priority_component_weights[j]),
+          " points<br>Total priority score: ", score_label(x$priority_score[i]),
+          "<br>Priority level: ", x$priority_group[i])
+        annotations[[length(annotations) + 1]] <- list(x = j, y = i,
+          text = score_label(scores[i, j]), showarrow = FALSE,
+          font = list(size = 12, color = if (!is.na(scores[i, j]) && scores[i, j] >= 60) "white" else "#172b4d"))
+      }
+    }
+    plot_ly(x = 1:3, y = seq_len(nrow(x)), z = scores, type = "heatmap",
+      source = "as_priority_components", zmin = 0, zmax = 100, xgap = 3, ygap = 3,
+      colorscale = list(list(0, "#eff6fc"), list(0.5, "#65adc2"), list(1, "#084c70")),
+      text = hover, hoverinfo = "text", hoverongaps = FALSE,
+      colorbar = list(title = "Raw score", tickvals = seq(0, 100, 25))) |>
+      layout(annotations = annotations,
+        xaxis = list(title = "", side = "top", tickmode = "array", tickvals = 1:3,
+          ticktext = c("Patient risk<br>Weight 90%", "Transmission<br>Weight 5%", "Child burden / population<br>Weight 5%"),
+          fixedrange = TRUE),
+        yaxis = list(title = "", autorange = "reversed", tickmode = "array",
+          tickvals = seq_len(nrow(x)), ticktext = labels, automargin = TRUE, fixedrange = TRUE),
+        margin = list(l = 280, r = 95, t = 80, b = 20), plot_bgcolor = "#f1f3f5") |>
+      event_register("plotly_click") |> config(displayModeBar = FALSE)
+  })
 
-    plot_ly(
-      data,
-      x = ~score,
-      y = ~component,
-      type = "bar",
-      orientation = "h",
-      marker = list(color = "#0056A6"),
-      text = ~paste0(
-        round(score, 1), " / 100; weight ", round(weight * 100), "%"
-      ),
-      hoverinfo = "text"
-    ) |>
-      layout(
-        xaxis = list(title = "Component score (0-100)", range = c(0, 100)),
-        yaxis = list(title = "", automargin = TRUE),
-        margin = list(l = 225, r = 20, t = 10, b = 55),
-        showlegend = FALSE
-      )
+  observeEvent(event_data("plotly_click", source = "as_priority_components"), {
+    clicked <- event_data("plotly_click", source = "as_priority_components")
+    req(!is.null(clicked$y), length(clicked$y) > 0)
+    index <- suppressWarnings(as.numeric(clicked$y[[1]]))
+    x <- priority_heatmap_data()
+    req(length(index) == 1, is.finite(index), index == floor(index), index >= 1, index <= nrow(x))
+    target <- profile_selection(community, x$community_id[index])
+    profile_target(target$community_id)
+    updateSelectInput(session, "profile_island", selected = target$island)
+    updateSelectInput(session, "profile_district",
+      choices = target$districts, selected = target$district)
+    updateSelectizeInput(session, "community_id", choices = target$villages, selected = target$community_id)
   })
 
   output$community_vaccine_table <- renderDT({
     x <- patient |>
-      filter(community_id == input$community_id) |>
+      filter(community_id == selected_community()$community_id) |>
       select(all_of(unname(AS_VACCINE_NEED_MAP))) |>
       pivot_longer(everything(), names_to = "variable", values_to = "needed") |>
       mutate(Vaccine = names(AS_VACCINE_NEED_MAP)[
@@ -915,7 +1155,7 @@ server <- function(input, output, session) {
 
   output$community_product_table <- renderDT({
     x <- patient |>
-      filter(community_id == input$community_id) |>
+      filter(community_id == selected_community()$community_id) |>
       select(all_of(unname(AS_PRODUCT_MAP))) |>
       pivot_longer(everything(), names_to = "variable", values_to = "needed") |>
       mutate(Product = names(AS_PRODUCT_MAP)[match(variable, AS_PRODUCT_MAP)]) |>

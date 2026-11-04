@@ -17,6 +17,125 @@ rescale_100 <- function(x) {
   out
 }
 
+rank_reviewed_communities <- function(community, downgraded) {
+  # Rank reviewed categories first, then score. Reviewed small communities form
+  # a separate bottom block within Moderate; ties share the minimum rank.
+  community$priority_score_rank<-rank(-community$priority_score,ties.method="min",na.last="keep")
+  community$priority_rank<-rep(NA_real_,nrow(community))
+  offset<-0L
+  for(level in c("High","Moderate","Low")) {
+    for(bottom in if(level=="Moderate")c(FALSE,TRUE) else FALSE) {
+      in_bottom<-!is.na(downgraded) & downgraded
+      rows<-which(!is.na(community$priority_score) &
+        as.character(community$priority_group)==level &
+        (if(level=="Moderate")in_bottom==bottom else TRUE))
+      community$priority_rank[rows]<-offset+rank(-community$priority_score[rows],ties.method="min")
+      offset<-offset+length(rows)
+    }
+  }
+  community
+}
+
+apply_community_priority_review <- function(community) {
+  if (anyNA(community$child_population) || any(community$child_population < 0))
+    stop("Community child populations must be non-missing and non-negative.")
+  unknown_label <- function(x) {
+    key<-toupper(trimws(as.character(x)))
+    is.na(key) | key %in% c("", "NA", "N/A", "MISSING") |
+      grepl("(^|[^A-Z])UNKNOWN([^A-Z]|$)",key)
+  }
+  unknown<-unknown_label(community$village) | unknown_label(community$county)
+  base<-if("priority_group_before_review" %in% names(community))
+    as.character(community$priority_group_before_review) else as.character(community$priority_group)
+  small<-community$child_population <= 10
+  review_required<-unknown & community$child_population > 30
+  level<-base
+  level[small & !is.na(base) & base=="High"]<-"Moderate"
+  level[review_required]<-"High"
+  community$priority_group_before_review<-base
+  community$priority_group<-level
+  community$small_denominator<-small
+  community$data_quality_flag<-vapply(seq_len(nrow(community)),function(i) {
+    flags<-trimws(strsplit(as.character(community$data_quality_flag[i]),";",fixed=TRUE)[[1]])
+    flags<-flags[!is.na(flags) & nzchar(flags) & !flags %in% c("Ready","Small denominator","Data quality review required")]
+    if(small[i])flags<-c(flags,"Small denominator")
+    if(review_required[i])flags<-c(flags,"Data quality review required")
+    if(length(flags))paste(unique(flags),collapse="; ") else "Ready"
+  },character(1))
+  rank_reviewed_communities(community,small & !is.na(base) & base=="High")
+}
+
+village_priority_export <- function(community) {
+  community<-apply_community_priority_review(community)
+  fields<-c("county","district","village","analysis_date","priority_rank","priority_group",
+    "priority_score","child_population","utd_coverage","utd_no_mmr_coverage",
+    "children_not_utd","proportion_not_utd","mmr_eligible_n","mmr_not_utd_n","mmr_coverage",
+    "community_patient_risk_component","transmission_component","burden_component",
+    "median_individual_risk","p75_individual_risk","high_risk_n","high_risk_percent",
+    "population_year","population","area_km2","population_density_km2","density_percentile_component",
+    "high_density_component_for_score","population_size_component","observed_burden_component")
+  as.data.frame(community[,fields])
+}
+
+village_priority_guide <- function() {
+  data.frame(Indicator=c("Row definition","Source","Snapshot",
+    "priority_score","community_patient_risk_component","individual_risk_score",
+    "high_risk_n / high_risk_percent","transmission_component","density_percentile_component",
+    "high_density_component_for_score","burden_component","observed_burden_component",
+    "population_size_component","Missing demographic references","priority_group",
+    "Coverage units","Weights and contributions","Small denominator review","Priority ranking"),
+    Definition=c("One dashboard village/county/district community per row; county splits are retained. Do not sum repeated Census references.",
+    "Exported community summary from the IIS child cohort aged 2-83 months and 2020 Census village references.",
+    "Scores, ranks, groups and component inputs are a snapshot as of analysis_date. Refresh the analysis to update them.",
+    "Round(0.90 * community patient risk + 0.05 * transmission + 0.05 * burden, 1); scale 0-100.",
+    "0.60 * median individual risk + 0.20 * 75th-percentile individual risk + 0.20 * high-risk percentage.",
+    "20 points if non-MMR core series is not UTD + 55 if MMR is not UTD + 25 * min(months since last vaccination / 36, 1). No history receives 25 recency points. Age-ineligible antigens do not count as overdue.",
+    "Count / percentage of cohort children with individual risk score >=50; child_population is the denominator.",
+    "high_density_component_for_score * community_patient_risk_component / 100.",
+    "0-100 percentile rank of log(1 + population density); average ranks for ties; each reference village counted once.",
+    "Density percentile, or 50 when unavailable.",
+    "0.50 * observed_burden_component + 0.50 * population_size_component (50 if population percentile is missing).",
+    "log(1 + high_risk_n), min-max scaled to 0-100 across community rows; 50 if all counts are equal.",
+    "0-100 percentile rank of log(1 + total Census population); average ranks for ties; 50 when all references are equal.",
+    "Blank source values remain blank. Density and population inputs use a neutral score of 50 when missing.",
+    "High if UTD coverage <30% or MMR coverage <50%, or score above upper tertile. Otherwise Moderate above lower tertile, else Low. Cutoffs use all community rows.",
+    "Coverage and percentage fields are percentage points (0-100). MMR denominator includes eligible children only. UTD means up to date.",
+    "Weights are 90%, 5%, 5%. Multiply each component by its weight and round the sum to one decimal for priority_score.",
+    "All rows with 10 or fewer cohort children move from High to Moderate, including Unknown villages/counties. Unknown rows with more than 30 children are High and flagged for data-quality review. Other rows follow the score/coverage rules. Scores stay unchanged; review flags and original levels are retained in the dashboard CSV.",
+    "High first, then Moderate, then Low. Villages reduced from High to Moderate for small denominators rank below other Moderate villages. Each block uses descending scores; ties share the minimum rank. The dashboard CSV retains the numerical-score-only rank."),
+    check.names=FALSE)
+}
+
+write_village_priority_workbook <- function(community,path) {
+  data<-village_priority_export(community)
+  guide<-village_priority_guide()
+  wb<-openxlsx::createWorkbook()
+  date_line<-paste("Data as of",paste(sort(unique(as.character(community$analysis_date))),collapse="; "))
+  header<-openxlsx::createStyle(fgFill="#003E73",fontColour="#FFFFFF",textDecoration="bold",wrapText=TRUE,valign="center")
+  for(sheet in c("Village scores","Indicator guide")) {
+    openxlsx::addWorksheet(wb,sheet,gridLines=FALSE)
+    openxlsx::writeData(wb,sheet,date_line,startRow=1,colNames=FALSE)
+    x<-if(sheet=="Village scores")data else guide
+    openxlsx::writeDataTable(wb,sheet,x,startRow=3,tableStyle="TableStyleMedium2",headerStyle=header)
+    openxlsx::setColWidths(wb,sheet,cols=seq_len(ncol(x)),widths=24)
+    openxlsx::setRowHeights(wb,sheet,rows=3,heights=60)
+    openxlsx::freezePane(wb,sheet,firstActiveRow=4,firstActiveCol=if(sheet=="Village scores")4 else 1)
+  }
+  counts<-c("priority_rank","child_population","children_not_utd","mmr_eligible_n","mmr_not_utd_n","high_risk_n","population_year","population")
+  decimal_cols<-which(vapply(data,is.numeric,logical(1)) & !names(data) %in% counts)
+  openxlsx::addStyle(wb,"Village scores",openxlsx::createStyle(numFmt="0.0"),
+    rows=seq_len(nrow(data))+3,cols=decimal_cols,gridExpand=TRUE)
+  openxlsx::addStyle(wb,"Village scores",openxlsx::createStyle(numFmt="yyyy-mm-dd"),
+    rows=seq_len(nrow(data))+3,cols=match("analysis_date",names(data)),gridExpand=TRUE)
+  openxlsx::setRowHeights(wb,"Village scores",rows=seq_len(nrow(data))+3,heights=36)
+  openxlsx::setColWidths(wb,"Indicator guide",cols=1:2,widths=c(38,115))
+  openxlsx::addStyle(wb,"Indicator guide",openxlsx::createStyle(wrapText=TRUE,valign="top"),rows=seq_len(nrow(guide))+3,cols=1:2,gridExpand=TRUE)
+  openxlsx::setRowHeights(wb,"Indicator guide",rows=seq_len(nrow(guide))+3,heights=48)
+  dir.create(dirname(path),recursive=TRUE,showWarnings=FALSE)
+  openxlsx::saveWorkbook(wb,path,overwrite=TRUE)
+  invisible(path)
+}
+
 prepare_as_dashboard <- function(patient=NULL,project_dir=here::here(),config=AS_CONFIG) {
   if(is.null(patient)) {
     file<-newest_matching_file(file.path(project_dir,"data","Analytic Code Output"),
@@ -57,7 +176,6 @@ prepare_as_dashboard <- function(patient=NULL,project_dir=here::here(),config=AS
     coordinate_basis=first_nonmissing(coordinate_basis),county_resolved=all(county_resolved),
     clinic_conflicts=sum(clinic_conflict %in% TRUE),analysis_date=max(analysis_date),.groups="drop") |>
     dplyr::mutate(
-      island_access_component=ifelse(island_atoll=="Unknown",50,ifelse(island_atoll!=config$primary_island,100,0)),
       community_patient_risk_component=0.60*median_individual_risk+0.20*p75_individual_risk+0.20*high_risk_percent)
   
   # Percentiles use each official/combined village once, even if clinic resolves
@@ -68,16 +186,16 @@ prepare_as_dashboard <- function(patient=NULL,project_dir=here::here(),config=AS
       population_size_component=percentile_100(log1p(population))) |>
     dplyr::select(island_atoll,village,density_percentile_component,population_size_component)
   community<-community |> dplyr::left_join(density,by=c("island_atoll","village")) |> dplyr::mutate(
-    low_density_component_for_score=dplyr::coalesce(100-density_percentile_component,50),
     high_density_component_for_score=dplyr::coalesce(density_percentile_component,50),
     transmission_component=high_density_component_for_score*community_patient_risk_component/100,
     observed_burden_component=rescale_100(log1p(high_risk_n)),
    
-     # Within the retained 4% burden weight, use both IIS high-risk child burden
+     # Within the burden weight, use both IIS high-risk child burden
     # and Census population size. The reference ranking counts each village once.
     burden_component=0.50*observed_burden_component+0.50*dplyr::coalesce(population_size_component,50),
-    priority_score=round(0.90*community_patient_risk_component+0.01*island_access_component+
-      0.01*low_density_component_for_score+0.04*transmission_component+0.04*burden_component,1),
+    # Weight patient risk, transmission, and burden at 90%, 5%, and 5%.
+    priority_score=round((90*community_patient_risk_component+
+      5*transmission_component+5*burden_component)/100,1),
     priority_rank=dplyr::min_rank(dplyr::desc(priority_score)))
   cuts<-stats::quantile(community$priority_score,c(1/3,2/3),na.rm=TRUE,names=FALSE)
   community<-community |> dplyr::mutate(
@@ -87,6 +205,7 @@ prepare_as_dashboard <- function(patient=NULL,project_dir=here::here(),config=AS
       !county_resolved ~ "Multiple county/district candidates",is.na(latitude)|is.na(longitude) ~ "Missing coordinates",
       stringr::str_detect(geography_qa,"Review") ~ "Review locality match",is.na(population_density_km2) ~ "Missing population reference",
       TRUE ~ "Ready")) |> dplyr::arrange(priority_rank,island_atoll,district,county,village)
+  community<-apply_community_priority_review(community) |> dplyr::arrange(priority_rank,island_atoll,district,county,village)
   long_needs<-function(map,item,value) {
     out<-patient |> dplyr::select(dplyr::all_of(c(geo,"agegroup","age_group_label",unname(map)))) |>
       tidyr::pivot_longer(dplyr::all_of(unname(map)),names_to="variable",values_to="needed") |>
@@ -105,6 +224,10 @@ prepare_as_dashboard <- function(patient=NULL,project_dir=here::here(),config=AS
       community_product_needs=long_needs(AS_PRODUCT_MAP,"product","doses_needed"),patient_dashboard=patient,qa_as_geography=quality)
     readr::write_csv(x,file.path(data_dir,paste0(name,".csv")),na="")
   }
+  score_path<-file.path(data_dir,"Analytic Code Output",paste0("American_Samoa_Village_Priority_Indicators_",
+    format(max(community$analysis_date),"%m%d%y"),".xlsx"))
+  write_village_priority_workbook(community,score_path)
+  message("Village priority indicators: ",score_path)
   message("American Samoa dashboard data preparation complete.")
   invisible(community)
 }

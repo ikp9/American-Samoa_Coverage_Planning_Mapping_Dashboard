@@ -180,6 +180,7 @@ run_as_analysis <- function(project_dir=NULL,analysis_date=NULL,verbose=TRUE) {
   write_as_table_workbook(tables,paths[["tables"]],analysis_date,history$product_audit,history$cvx_issues,run_qa)
   progress("Preparing dashboard CSVs and QA files...")
   prepare_as_dashboard(analytic_deid,project_dir,config)
+  paths<-c(paths,village_priority=file.path(output_dir,paste0("American_Samoa_Village_Priority_Indicators_",date_stamp,".xlsx")))
   readr::write_csv(run_qa,file.path(output_dir,paste0("Run_QA_",date_stamp,".csv")))
   readr::write_csv(history$product_audit,file.path(output_dir,paste0("Product_Use_Audit_",date_stamp,".csv")))
   readr::write_csv(history$cvx_issues,file.path(output_dir,paste0("CVX_Mapping_QA_",date_stamp,".csv")))

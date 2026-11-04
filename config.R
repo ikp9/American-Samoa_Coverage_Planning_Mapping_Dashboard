@@ -13,8 +13,6 @@ AS_CONFIG <- list(
   cvx_file = "data/CVX Codes.xlsx",
   # Optional local CSV: clinic_pattern,county (exact official county name).
   clinic_county_overrides = "data/clinic_county_overrides.csv",
-  # Priority proxy for travel from Tutuila; not an observed travel-time measure.
-  primary_island = "Tutuila Island",
   # Combinations are used only when ALL their antigens are eligible today.
   # Reorder/remove products to match local supply after reviewing Product Use Audit.
   combination_preference = c("Vaxelis", "Pediarix", "Pentacel"),
