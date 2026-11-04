@@ -31,6 +31,7 @@ data/Raw Patient Data/*
 !/data/Analytic Code Output/
 /data/Analytic Code Output/**
 !/data/Analytic Code Output/Dataset 2_American_Samoa_2-83 Mos_DeID_Full_Dataset_*.xlsx
+!/data/Analytic Code Output/Dataset 3_American_Samoa_Flu_DeID_*.xlsx
 
 # Generated CSVs are reproducible. Review them before any authorized deployment.
 data/*.csv
